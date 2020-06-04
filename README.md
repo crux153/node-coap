@@ -2,7 +2,8 @@ node-coap
 =====
 
 [![Build
-Status](https://travis-ci.org/mcollina/node-coap.png)](https://travis-ci.org/mcollina/node-coap)
+Status](https://travis-ci.org/crux153/node-coap.png)](https://travis-ci.org/crux153/node-coap)
+[![npm version](https://badge.fury.io/js/%40ref%2Fcoap.svg)](https://badge.fury.io/js/%40ref%2Fcoap)
 [![gitter](https://badges.gitter.im/mcollina/node-coap.png)](https://gitter.im/mcollina/node-coap)
 
 __node-coap__ is a client and server library for CoAP modeled after the `http` module.
@@ -14,10 +15,6 @@ __node-coap__ is a client and server library for CoAP modeled after the `http` m
   * <a href="#api">API</a>
   * <a href="#contributing">Contributing</a>
   * <a href="#license">License &amp; copyright</a>
-
-[![NPM](https://nodei.co/npm/coap.png)](https://nodei.co/npm/coap/)
-
-[![NPM](https://nodei.co/npm-dl/coap.png)](https://nodei.co/npm/coap/)
 
 <a name="intro"></a>
 ## Introduction
@@ -46,7 +43,7 @@ If you need a command line interface for CoAP, check out
 ## Installation
 
 ```
-$ npm install coap --save
+$ npm install @ref/coap --save
 ```
 
 <a name="basic"></a>
@@ -562,7 +559,7 @@ __node-coap__ is an **OPEN Open Source Project**. This means that:
 
 > Individuals making significant and valuable contributions are given commit-access to the project to contribute as they see fit. This project is more like an open wiki than a standard guarded open source project.
 
-See the [CONTRIBUTING.md](https://github.com/mcollina/node-coap/blob/master/CONTRIBUTING.md) file for more details.
+See the [CONTRIBUTING.md](https://github.com/crux153/node-coap/blob/master/CONTRIBUTING.md) file for more details.
 
 
 ## Contributors
