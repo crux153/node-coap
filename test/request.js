@@ -7,6 +7,7 @@
  */
 
 var coap      = require('../')
+  , toBinary  = require('../lib/option_converter').toBinary
   , parse     = require('coap-packet').parse
   , generate  = require('coap-packet').generate
   , dgram     = require('dgram')
@@ -18,11 +19,13 @@ describe('request', function() {
   var server
     , server2
     , port
+    , clock
 
   beforeEach(function (done) {
     port = nextPort()
     server = dgram.createSocket('udp4')
     server.bind(port, done)
+    clock = sinon.useFakeTimers()
   })
 
   afterEach(function () {
@@ -32,7 +35,15 @@ describe('request', function() {
       server2.close()
 
     server = server2 = null
+
+    clock.restore()
   })
+
+  function fastForward(increase, max) {
+    clock.tick(increase)
+    if (increase < max)
+      setImmediate(fastForward.bind(null, increase, max - increase))
+  }
 
   function ackBack(msg, rsinfo) {
     var packet = parse(msg)
@@ -306,6 +317,7 @@ describe('request', function() {
       setTimeout(function () {
         done()
       }, 20)
+      fastForward(5, 25)
     })
 
     req.on('response', function (res) {
@@ -340,6 +352,99 @@ describe('request', function() {
     })
 
     req.end()
+  })
+
+  it('should emit a response on reset', function (done) {
+    var req = request({
+      port: port
+    })
+
+    server.on('message', function (msg, rsinfo) {
+      var packet = parse(msg)
+        , toSend = generate({
+          messageId: packet.messageId
+          , code: '0.00'
+          , ack: false
+          , reset: true
+        })
+      server.send(toSend, 0, toSend.length, rsinfo.port, rsinfo.address)
+    })
+
+    req.on('response', function (res) {
+      if (res.code === '0.00') {
+        done()
+      } else {
+        done(new Error('Unexpected response'))
+      }
+    })
+
+    req.end()
+  })
+
+  it('should stop retrying on reset', function (done) {
+    var req = request({
+      port: port
+    })
+    var messages = 0
+
+    server.on('message', function (msg, rsinfo) {
+      var packet = parse(msg)
+        , toSend = generate({
+          messageId: packet.messageId
+          , code: '0.00'
+          , ack: false
+          , reset: true
+        })
+      messages++
+      server.send(toSend, 0, toSend.length, rsinfo.port, rsinfo.address)
+    })
+
+    req.on('response', function (res) {
+      if (res.code !== '0.00') {
+        done(new Error('Unexpected response'))
+      }
+    })
+    req.end()
+
+    setTimeout(function () {
+      expect(messages).to.eql(1)
+      done()
+    }, 45 * 1000)
+
+    fastForward(100, 45 * 1000)
+  })
+
+  it('should not send response to invalid packets', function (done) {
+    var req = request({
+      port: port
+    })
+    var messages = 0
+
+    server.on('message', function (msg, rsinfo) {
+      var packet = parse(msg)
+        , toSend = generate({
+          messageId: packet.messageId
+          , code: '0.00'
+          , ack: true
+          , payload: 'this payload invalidates empty message'
+        })
+      expect(packet.code).to.be.eq('0.01');
+      messages++
+      server.send(toSend, 0, toSend.length, rsinfo.port, rsinfo.address)
+    })
+
+    req.on('response', function (res) {
+      done(new Error('Unexpected response'))
+    })
+
+    req.end()
+
+    setTimeout(function () {
+      expect(messages).to.eql(5)
+      done()
+    }, 45 * 1000)
+
+    fastForward(100, 45 * 1000)
   })
 
   it('should allow to add an option', function (done) {
@@ -893,6 +998,20 @@ describe('request', function() {
       server.send(toSend, 0, toSend.length, rsinfo.port, rsinfo.address)
     }
 
+    function sendNotification(rsinfo, req, opts) {
+      ssend(rsinfo, {
+        messageId: req.messageId
+        , token: req.token
+        , payload: Buffer.from(opts.payload)
+        , ack: false
+        , options: [{
+          name: 'Observe'
+          , value: toBinary('Observe', opts.num)
+        }]
+        , code: '2.05'
+      })
+    }
+
     it('should ack the update', function (done) {
 
       var req = doObserve()
@@ -964,6 +1083,143 @@ describe('request', function() {
         expect(packet.options[0].name).to.eql('Observe')
         expect(packet.options[0].value).to.eql(new Buffer(0))
         done()
+      })
+    })
+
+    it('should allow multiple notifications', function (done) {
+      server.once('message', function(msg, rsinfo) {
+        const req = parse(msg)
+
+        sendNotification(rsinfo, req, { num: 0, payload: 'zero' })
+        sendNotification(rsinfo, req, { num: 1, payload: 'one' })
+      })
+
+      const req = request({
+        port: port
+        , observe: true
+        , confirmable: false
+      }).end()
+
+      req.on('response', function (res) {
+        let ndata = 0
+
+        res.on('data', function (data) {
+          ndata++
+          if (ndata === 1) {
+            expect(res.headers['Observe']).to.equal(0)
+            expect(data.toString()).to.equal('zero')
+          } else if (ndata === 2) {
+            expect(res.headers['Observe']).to.equal(1)
+            expect(data.toString()).to.equal('one')
+            done()
+          } else {
+            done(new Error('Unexpected data'))
+          }
+        })
+      })
+    })
+
+    it('should drop out of order notifications', function (done) {
+      server.once('message', function(msg, rsinfo) {
+        const req = parse(msg)
+
+        sendNotification(rsinfo, req, { num: 1, payload: 'one' })
+        sendNotification(rsinfo, req, { num: 0, payload: 'zero' })
+        sendNotification(rsinfo, req, { num: 2, payload: 'two' })
+      })
+
+      const req = request({
+        port: port
+        , observe: true
+        , confirmable: false
+      }).end()
+
+      req.on('response', function (res) {
+        let ndata = 0
+
+        res.on('data', function (data) {
+          ndata++
+          if (ndata === 1) {
+            expect(res.headers['Observe']).to.equal(1)
+            expect(data.toString()).to.equal('one')
+          } else if (ndata === 2) {
+            expect(res.headers['Observe']).to.equal(2)
+            expect(data.toString()).to.equal('two')
+            done()
+          } else {
+            done(new Error('Unexpected data'))
+          }
+        })
+      })
+    })
+
+    it('should allow repeating order after 128 seconds', function (done) {
+      server.once('message', function(msg, rsinfo) {
+        const req = parse(msg)
+
+        sendNotification(rsinfo, req, { num: 1, payload: 'one' })
+        setTimeout(function () {
+          sendNotification(rsinfo, req, { num: 1, payload: 'two' })
+        }, 128 * 1000 + 200)
+      })
+
+      const req = request({
+        port: port
+        , observe: true
+        , confirmable: false
+      }).end()
+
+      req.on('response', function (res) {
+        let ndata = 0
+
+        res.on('data', function (data) {
+          ndata++
+          if (ndata === 1) {
+            expect(res.headers['Observe']).to.equal(1)
+            expect(data.toString()).to.equal('one')
+          } else if (ndata === 2) {
+            expect(res.headers['Observe']).to.equal(1)
+            expect(data.toString()).to.equal('two')
+            done()
+          } else {
+            done(new Error('Unexpected data'))
+          }
+        })
+      })
+
+      fastForward(100, 129*1000)
+    })
+
+    it('should allow Observe option 24bit overflow', function (done) {
+      server.once('message', function(msg, rsinfo) {
+        const req = parse(msg)
+
+        sendNotification(rsinfo, req, { num: 0xffffff, payload: 'max' })
+        sendNotification(rsinfo, req, { num: 0, payload: 'zero' })
+      })
+
+      const req = request({
+        port: port
+        , observe: true
+        , confirmable: false
+      }).end()
+
+      req.on('response', function (res) {
+        let ndata = 0
+
+        res.on('data', function (data) {
+          ndata++
+          if (ndata === 1) {
+            expect(res.headers['Observe']).to.equal(0xffffff)
+            expect(data.toString()).to.equal('max')
+          } else if (ndata === 2) {
+            expect(res.headers['Observe']).to.equal(0)
+            expect(data.toString()).to.equal('zero')
+            done()
+          } else {
+            done(new Error('Unexpected data'))
+          }
+        })
       })
     })
   })
@@ -1046,14 +1302,30 @@ describe('request', function() {
 
 
   describe('multicast', function () {
+    var MULTICAST_ADDR = '224.0.0.1'
+      , port2 = nextPort()
+      , sock = null
 
     function doReq() {
       return request({
-        host: '224.0.0.1'
+        host: MULTICAST_ADDR
         , port: port
         , multicast: true
       }).end()
     }
+
+    beforeEach(function(done) {
+      sock = dgram.createSocket('udp4')
+      sock.bind(port2, function() {
+        server.addMembership(MULTICAST_ADDR)
+        sock.addMembership(MULTICAST_ADDR)
+        done()
+      })
+    });
+
+    afterEach(function() {
+      sock.close()
+    });
 
     it('should be non-confirmable', function (done) {
       var req = doReq()
@@ -1092,6 +1364,37 @@ describe('request', function() {
         done()
       })
 
+    })
+
+    it('should allow for differing MIDs for non-confirmable requests', function (done) {
+      var _req = null
+        , counter = 0
+        , servers = [undefined, undefined]
+        , mids = [0, 0]
+
+      servers.forEach(function (_, i) {
+        servers[i] = coap.createServer(function (req, res) {
+          var mid = _req._packet.messageId + i + 1
+          res._packet.messageId = mid
+          mids[i] = mid
+          res.end()
+        })
+        servers[i].listen(sock)
+      })
+
+      _req = request({
+        host: MULTICAST_ADDR,
+        port: port2,
+        confirmable: false,
+        multicast: true,
+      }).on('response', function (res) {
+        if(++counter == servers.length) {
+          mids.forEach(function(mid, i) {
+            expect(mid).to.eql(_req._packet.messageId + i + 1)
+          })
+          done()
+        }
+      }).end()
     })
 
   })
